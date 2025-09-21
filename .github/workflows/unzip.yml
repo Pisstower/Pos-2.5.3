@@ -1,0 +1,122 @@
+name: Unzip ZIP to repo root
+
+on:
+  workflow_dispatch:
+    inputs:
+      zip_glob:
+        description: 'Cesta/šablona k ZIP souboru (např. Pos-*.zip nebo dist.zip)'
+        required: false
+        default: '*.zip'
+      extract_to:
+        description: 'Kam rozbalit (výchozí . = kořen repa)'
+        required: false
+        default: '.'
+      clean_before:
+        description: 'Smazat existující soubory před rozbalením (kromě .git/.github a ZIPu)?'
+        required: false
+        default: 'true'
+      commit_changes:
+        description: 'Commitnout rozbalené soubory do repozitáře?'
+        required: false
+        default: 'true'
+      commit_message:
+        description: 'Commit message'
+        required: false
+        default: 'chore: unzip artifact into repo root'
+
+permissions:
+  contents: write
+
+jobs:
+  unzip:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Find ZIP (newest match)
+        id: findzip
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          GLOB="${{ github.event.inputs.zip_glob || '*.zip' }}"
+          files=( $GLOB )
+          if (( ${#files[@]} == 0 )); then
+            echo "No ZIP matches: $GLOB" >&2
+            exit 1
+          fi
+          # Pick newest by mtime
+          newest=$(ls -1t ${GLOB} | head -n1)
+          echo "zip_path=$newest" >> "$GITHUB_OUTPUT"
+          echo "Found ZIP: $newest"
+
+      - name: Prepare extract dir
+        if: ${{ github.event.inputs.clean_before == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          dest="${{ github.event.inputs.extract_to || '.' }}"
+          mkdir -p "$dest"
+          echo "Cleaning $dest (except .git, .github and *.zip)"
+          shopt -s extglob dotglob
+          cd "$dest"
+          # keep .git, .github, any *.zip; delete the rest
+          for item in * .*; do
+            case "$item" in
+              '.'|'..'|'.git'|'.github'|*.zip) continue ;;
+            esac
+            rm -rf -- "$item"
+          done
+
+      - name: Unzip to destination
+        shell: bash
+        run: |
+          set -euo pipefail
+          zip_path="${{ steps.findzip.outputs.zip_path }}"
+          dest="${{ github.event.inputs.extract_to || '.' }}"
+          echo "Unzipping $zip_path -> $dest"
+          unzip -q -o "$zip_path" -d "$dest"
+          echo "Unzip done."
+
+      - name: Flatten if single top-level folder
+        shell: bash
+        run: |
+          set -euo pipefail
+          dest="${{ github.event.inputs.extract_to || '.' }}"
+          shopt -s dotglob
+          entries=( "$dest"/* )
+          # If there is exactly one directory and no other files, and it contains package.json,
+          # move its contents up to dest
+          if (( ${#entries[@]} == 1 )) && [ -d "${entries[0]}" ]; then
+            inner="${entries[0]}"
+            if [ -f "$inner/package.json" ]; then
+              echo "Flattening: moving $inner/* -> $dest"
+              shopt -s dotglob
+              mv "$inner"/* "$dest"/
+              rmdir "$inner"
+            fi
+          fi
+
+      - name: Show repo root tree (debug)
+        run: |
+          ls -la
+          echo "----"
+          test -f package.json && cat package.json | head -n 20 || true
+
+      - name: Commit changes
+        if: ${{ github.event.inputs.commit_changes == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Avoid committing the zip itself
+          git add -A
+          # If nothing to commit, skip
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git commit -m "${{ github.event.inputs.commit_message }}"
+          git push
