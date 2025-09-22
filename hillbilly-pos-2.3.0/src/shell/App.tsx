@@ -1,1 +1,0 @@
-// App.tsx code for version 2.3.0 (split containers)
