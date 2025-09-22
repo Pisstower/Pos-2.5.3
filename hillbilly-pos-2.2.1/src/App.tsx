@@ -1,1 +1,0 @@
-// App.tsx code for version 2.2.1 (fixed payment modal JSX)
