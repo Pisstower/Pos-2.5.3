@@ -1,1 +1,0 @@
-// App.tsx code for version 1.1.0
